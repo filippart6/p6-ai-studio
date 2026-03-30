@@ -135,9 +135,10 @@ def upload_reference():
         ext = '.jpg'
     filename = f'ref_{uuid.uuid4().hex}{ext}'
     (UPLOADS_DIR / filename).write_bytes(f.read())
-    # Build absolute URL — force HTTPS when behind a proxy (Railway)
-    scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
-    url = f"{scheme}://{request.host}/uploads/{filename}"
+    # Force HTTPS unless running locally
+    host = request.host
+    scheme = 'http' if host.startswith('localhost') or host.startswith('127.') else 'https'
+    url = f"{scheme}://{host}/uploads/{filename}"
     return jsonify({'url': url, 'filename': filename})
 
 
