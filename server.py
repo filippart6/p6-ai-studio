@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 import os
+import sqlite3
+import uuid
 import requests
 from pathlib import Path
+from datetime import datetime
 from functools import wraps
 from flask import (Flask, request, jsonify, send_from_directory,
                    Response, session, redirect, url_for)
@@ -10,10 +13,14 @@ app = Flask(__name__, static_folder='public')
 
 ALLOWED_EXTENSIONS = {'.wav', '.mp3'}
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB
+BASE_DIR = Path(__file__).parent
+UPLOADS_DIR = BASE_DIR / 'uploads'
+UPLOADS_DIR.mkdir(exist_ok=True)
+DB_PATH = BASE_DIR / 'history.db'
 
 
 def load_env():
-    env_path = Path(__file__).parent / '.env'
+    env_path = BASE_DIR / '.env'
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             line = line.strip()
@@ -23,11 +30,45 @@ def load_env():
 
 
 load_env()
-
 app.secret_key = os.environ.get('SECRET_KEY', 'change-me-in-production')
 
 
-# ── Auth helpers ─────────────────────────────────────────────────────────────
+# ── Database ──────────────────────────────────────────────────────────────────
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    with get_db() as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS image_history (
+                id              TEXT PRIMARY KEY,
+                user            TEXT NOT NULL,
+                prompt          TEXT NOT NULL,
+                neg_prompt      TEXT,
+                size            TEXT,
+                model           TEXT,
+                filename        TEXT NOT NULL,
+                created_at      TEXT NOT NULL,
+                guidance_scale  REAL DEFAULT 7.5,
+                steps           INTEGER DEFAULT 30
+            )
+        ''')
+        # Migrate existing DBs that lack the new columns
+        for col, default in [('guidance_scale', '7.5'), ('steps', '30')]:
+            try:
+                conn.execute(f'ALTER TABLE image_history ADD COLUMN {col} REAL DEFAULT {default}')
+            except Exception:
+                pass
+
+
+init_db()
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def login_required(f):
     @wraps(f)
@@ -51,10 +92,10 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '')
-        valid_user = os.environ.get('LOGIN_USER', '')
-        valid_pass = os.environ.get('LOGIN_PASSWORD', '')
-        if username == valid_user and password == valid_pass:
+        if username == os.environ.get('LOGIN_USER', '') and \
+           password == os.environ.get('LOGIN_PASSWORD', ''):
             session['logged_in'] = True
+            session['username'] = username
             return redirect(url_for('index'))
         return redirect(url_for('login') + '?error=1')
     return send_from_directory(app.static_folder, 'login.html')
@@ -66,12 +107,37 @@ def logout():
     return redirect(url_for('login'))
 
 
+# ── Static uploads ────────────────────────────────────────────────────────────
+
+@app.route('/uploads/<filename>')
+@login_required
+def serve_upload(filename):
+    return send_from_directory(UPLOADS_DIR, filename)
+
+
 # ── App routes ────────────────────────────────────────────────────────────────
 
 @app.route('/')
 @login_required
 def index():
     return send_from_directory(app.static_folder, 'index.html')
+
+
+@app.route('/api/upload-reference', methods=['POST'])
+@login_required
+def upload_reference():
+    """Save a reference image and return its public URL."""
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image provided'}), 400
+    f = request.files['image']
+    ext = Path(f.filename).suffix.lower() if f.filename else '.jpg'
+    if ext not in {'.jpg', '.jpeg', '.png', '.webp'}:
+        ext = '.jpg'
+    filename = f'ref_{uuid.uuid4().hex}{ext}'
+    (UPLOADS_DIR / filename).write_bytes(f.read())
+    # Build absolute URL so Seedream can fetch it
+    url = request.host_url.rstrip('/') + f'/uploads/{filename}'
+    return jsonify({'url': url, 'filename': filename})
 
 
 @app.route('/api/clone-voice', methods=['POST'])
@@ -190,6 +256,144 @@ def text_to_speech(voice_id):
 
     return Response(resp.content, status=200, mimetype='audio/mpeg',
                     headers={'Content-Disposition': 'inline; filename="speech.mp3"'})
+
+
+@app.route('/api/generate-image', methods=['POST'])
+@login_required
+def generate_image():
+    api_key = os.environ.get('SEEDREAM_API_KEY', '').strip()
+    if not api_key:
+        return jsonify({'error': 'Seedream API key not configured'}), 500
+
+    body = request.get_json()
+    if not body or not body.get('prompt', '').strip():
+        return jsonify({'error': 'Prompt is required'}), 400
+
+    size_str = f"{body.get('width', 1920)}x{body.get('height', 1920)}"
+    guidance = float(body.get('guidance_scale', 7.5))
+    steps    = int(body.get('steps', 30))
+
+    payload = {
+        'model': os.environ.get('SEEDREAM_MODEL_ID', 'ep-20251203184030-sffv6'),
+        'prompt': body['prompt'].strip(),
+        'size': size_str,
+        'n': 1,
+        'watermark': False,
+    }
+    if body.get('negative_prompt'):
+        payload['negative_prompt'] = body['negative_prompt']
+
+    ref_url = body.get('reference_image_url', '')
+    if ref_url:
+        payload['image'] = ref_url
+        print(f'[ref-image] sending image URL: {ref_url}', flush=True)
+
+    print(f'[generate] payload keys: {list(payload.keys())}', flush=True)
+
+    try:
+        resp = requests.post(
+            'https://ark.ap-southeast.bytepluses.com/api/v3/images/generations',
+            headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+            json=payload, timeout=120
+        )
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Network error: {str(e)}'}), 502
+
+    try:
+        data = resp.json()
+    except Exception:
+        return jsonify({'error': f'Invalid response (status {resp.status_code})'}), 502
+
+    print(f'[generate] API status={resp.status_code} response keys={list(data.keys())}', flush=True)
+    if 'usage' in data:
+        print(f'[generate] usage={data["usage"]}', flush=True)
+
+    if not resp.ok:
+        msg = data.get('error', {}).get('message') or f'API error {resp.status_code}'
+        print(f'[generate] API error: {msg}', flush=True)
+        return jsonify({'error': msg}), resp.status_code
+
+    try:
+        remote_url = data['data'][0]['url']
+    except (KeyError, IndexError):
+        return jsonify({'error': 'No image returned from API'}), 502
+
+    # Download and store image locally so history persists
+    try:
+        img_resp = requests.get(remote_url, timeout=60)
+        img_resp.raise_for_status()
+        filename = f"{uuid.uuid4().hex}.jpg"
+        (UPLOADS_DIR / filename).write_bytes(img_resp.content)
+    except Exception as e:
+        return jsonify({'error': f'Failed to save image: {str(e)}'}), 502
+
+    # Save to history DB
+    entry_id = uuid.uuid4().hex
+    user = session.get('username', 'admin')
+    with get_db() as conn:
+        conn.execute(
+            '''INSERT INTO image_history
+               (id,user,prompt,neg_prompt,size,model,filename,created_at,guidance_scale,steps)
+               VALUES (?,?,?,?,?,?,?,?,?,?)''',
+            (
+                entry_id, user,
+                body['prompt'].strip(),
+                body.get('negative_prompt', '') or '',
+                size_str,
+                payload['model'],
+                filename,
+                datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+                guidance,
+                steps
+            )
+        )
+
+    local_url = f'/uploads/{filename}'
+    return jsonify({'url': local_url, 'id': entry_id})
+
+
+# ── History routes ────────────────────────────────────────────────────────────
+
+@app.route('/api/history')
+@login_required
+def get_history():
+    user = session.get('username', 'admin')
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 20))
+    offset = (page - 1) * per_page
+
+    with get_db() as conn:
+        total = conn.execute(
+            'SELECT COUNT(*) FROM image_history WHERE user=?', (user,)
+        ).fetchone()[0]
+        rows = conn.execute(
+            'SELECT * FROM image_history WHERE user=? ORDER BY created_at DESC LIMIT ? OFFSET ?',
+            (user, per_page, offset)
+        ).fetchall()
+
+    items = [dict(r) for r in rows]
+    for item in items:
+        item['image_url'] = f"/uploads/{item['filename']}"
+
+    return jsonify({'items': items, 'total': total, 'page': page, 'per_page': per_page})
+
+
+@app.route('/api/history/<entry_id>', methods=['DELETE'])
+@login_required
+def delete_history(entry_id):
+    user = session.get('username', 'admin')
+    with get_db() as conn:
+        row = conn.execute(
+            'SELECT filename FROM image_history WHERE id=? AND user=?', (entry_id, user)
+        ).fetchone()
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        # Delete file
+        img_path = UPLOADS_DIR / row['filename']
+        if img_path.exists():
+            img_path.unlink()
+        conn.execute('DELETE FROM image_history WHERE id=?', (entry_id,))
+    return jsonify({'success': True})
 
 
 if __name__ == '__main__':
