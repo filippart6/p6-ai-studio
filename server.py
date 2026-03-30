@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import os
+import io
+import json
 import sqlite3
 import uuid
 import requests
@@ -8,6 +10,68 @@ from datetime import datetime
 from functools import wraps
 from flask import (Flask, request, jsonify, send_from_directory,
                    Response, session, redirect, url_for)
+
+# ── Google Drive ───────────────────────────────────────────────────────────────
+DRIVE_FOLDER_ID = '14brOnkWE8JIjmcl8Y1j4j4HNqtGH-BIz'
+
+def get_drive_service():
+    creds_json = os.environ.get('GOOGLE_SERVICE_ACCOUNT_JSON')
+    if not creds_json:
+        return None
+    try:
+        from googleapiclient.discovery import build
+        from google.oauth2.service_account import Credentials
+        info = json.loads(creds_json)
+        creds = Credentials.from_service_account_info(
+            info, scopes=['https://www.googleapis.com/auth/drive'])
+        return build('drive', 'v3', credentials=creds, cache_discovery=False)
+    except Exception as e:
+        print(f'[drive] init error: {e}', flush=True)
+        return None
+
+def drive_upload(file_bytes, filename, mime_type='image/jpeg'):
+    """Upload bytes to Drive, make public, return (file_id, direct_url)."""
+    service = get_drive_service()
+    if not service:
+        return None, None
+    try:
+        from googleapiclient.http import MediaIoBaseUpload
+        meta = {'name': filename, 'parents': [DRIVE_FOLDER_ID]}
+        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mime_type)
+        f = service.files().create(body=meta, media_body=media,
+                                   fields='id').execute()
+        fid = f['id']
+        service.permissions().create(
+            fileId=fid, body={'type': 'anyone', 'role': 'reader'}).execute()
+        url = f'https://drive.google.com/uc?export=view&id={fid}'
+        print(f'[drive] uploaded {filename} → {url}', flush=True)
+        return fid, url
+    except Exception as e:
+        print(f'[drive] upload error: {e}', flush=True)
+        return None, None
+
+def drive_list_images():
+    """List image files in the Drive folder, newest first."""
+    service = get_drive_service()
+    if not service:
+        return []
+    try:
+        res = service.files().list(
+            q=f"'{DRIVE_FOLDER_ID}' in parents and trashed=false and mimeType contains 'image/'",
+            fields='files(id,name,thumbnailLink,createdTime)',
+            orderBy='createdTime desc',
+            pageSize=50
+        ).execute()
+        return [{
+            'id':        f['id'],
+            'name':      f.get('name', ''),
+            'thumbnail': f.get('thumbnailLink', '').replace('=s220', '=s400'),
+            'url':       f'https://drive.google.com/uc?export=view&id={f["id"]}',
+            'created':   f.get('createdTime', ''),
+        } for f in res.get('files', [])]
+    except Exception as e:
+        print(f'[drive] list error: {e}', flush=True)
+        return []
 
 app = Flask(__name__, static_folder='public')
 
@@ -287,13 +351,17 @@ def generate_image():
     if body.get('negative_prompt'):
         payload['negative_prompt'] = body['negative_prompt']
 
-    ref = body.get('reference_image_b64', '')
-    if ref:
-        # Send as data URI — Seedream accepts data:image/...;base64,... format
-        if not ref.startswith('data:'):
-            ref = f'data:image/jpeg;base64,{ref}'
-        payload['image'] = ref
-        print(f'[ref-image] sending as data URI, length={len(ref)}', flush=True)
+    ref_url = body.get('reference_image_url', '')
+    ref_b64 = body.get('reference_image_b64', '')
+    if ref_url:
+        # Drive URL — real HTTPS, Seedream can fetch it
+        payload['image'] = ref_url
+        print(f'[ref-image] sending Drive URL: {ref_url}', flush=True)
+    elif ref_b64:
+        if not ref_b64.startswith('data:'):
+            ref_b64 = f'data:image/jpeg;base64,{ref_b64}'
+        payload['image'] = ref_b64
+        print(f'[ref-image] sending as data URI, length={len(ref_b64)}', flush=True)
 
     print(f'[generate] payload keys: {list(payload.keys())}', flush=True)
 
@@ -325,14 +393,25 @@ def generate_image():
     except (KeyError, IndexError):
         return jsonify({'error': 'No image returned from API'}), 502
 
-    # Download and store image locally so history persists
+    # Download image from Seedream
     try:
         img_resp = requests.get(remote_url, timeout=60)
         img_resp.raise_for_status()
-        filename = f"{uuid.uuid4().hex}.jpg"
-        (UPLOADS_DIR / filename).write_bytes(img_resp.content)
+        img_bytes = img_resp.content
     except Exception as e:
-        return jsonify({'error': f'Failed to save image: {str(e)}'}), 502
+        return jsonify({'error': f'Failed to download image: {str(e)}'}), 502
+
+    filename = f"{uuid.uuid4().hex}.jpg"
+
+    # Try uploading to Google Drive first
+    _, drive_url = drive_upload(img_bytes, filename)
+
+    if drive_url:
+        image_url = drive_url
+    else:
+        # Fallback: save locally
+        (UPLOADS_DIR / filename).write_bytes(img_bytes)
+        image_url = f'/uploads/{filename}'
 
     # Save to history DB
     entry_id = uuid.uuid4().hex
@@ -342,21 +421,38 @@ def generate_image():
             '''INSERT INTO image_history
                (id,user,prompt,neg_prompt,size,model,filename,created_at,guidance_scale,steps)
                VALUES (?,?,?,?,?,?,?,?,?,?)''',
-            (
-                entry_id, user,
-                body['prompt'].strip(),
-                body.get('negative_prompt', '') or '',
-                size_str,
-                payload['model'],
-                filename,
-                datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
-                guidance,
-                steps
-            )
+            (entry_id, user,
+             body['prompt'].strip(),
+             body.get('negative_prompt', '') or '',
+             size_str, payload['model'],
+             image_url,
+             datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+             guidance, steps)
         )
 
-    local_url = f'/uploads/{filename}'
-    return jsonify({'url': local_url, 'id': entry_id})
+    return jsonify({'url': image_url, 'id': entry_id})
+
+
+# ── Drive routes ──────────────────────────────────────────────────────────────
+
+@app.route('/api/drive/files')
+@login_required
+def drive_files():
+    return jsonify(drive_list_images())
+
+@app.route('/api/drive/upload-reference', methods=['POST'])
+@login_required
+def drive_upload_reference():
+    if 'image' not in request.files:
+        return jsonify({'error': 'No image'}), 400
+    f = request.files['image']
+    ext = Path(f.filename).suffix.lower() if f.filename else '.jpg'
+    mime = 'image/png' if ext == '.png' else 'image/webp' if ext == '.webp' else 'image/jpeg'
+    filename = f'ref_{uuid.uuid4().hex}{ext}'
+    _, url = drive_upload(f.read(), filename, mime)
+    if not url:
+        return jsonify({'error': 'Drive upload failed'}), 502
+    return jsonify({'url': url})
 
 
 # ── History routes ────────────────────────────────────────────────────────────
@@ -380,7 +476,12 @@ def get_history():
 
     items = [dict(r) for r in rows]
     for item in items:
-        item['image_url'] = f"/uploads/{item['filename']}"
+        fn = item['filename']
+        # filename now stores either a full URL (Drive) or just a filename (local)
+        if fn.startswith('http') or fn.startswith('/uploads/'):
+            item['image_url'] = fn
+        else:
+            item['image_url'] = f"/uploads/{fn}"
 
     return jsonify({'items': items, 'total': total, 'page': page, 'per_page': per_page})
 

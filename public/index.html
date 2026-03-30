@@ -693,6 +693,70 @@
     .preset-clear:hover { color: var(--text); }
 
     /* ── @ mention dropdown ── */
+    /* ── Reference image + Drive browser ── */
+    .ref-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .ref-left { display: flex; flex-direction: column; }
+    .ref-right {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      min-height: 160px;
+    }
+    .drive-browser-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .drive-refresh {
+      background: none; border: none;
+      color: var(--text-muted); cursor: pointer;
+      font-size: 0.9rem; padding: 2px 4px;
+      transition: color 0.15s;
+    }
+    .drive-refresh:hover { color: var(--accent2); }
+    .drive-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      padding: 6px;
+      overflow-y: auto;
+      max-height: 220px;
+      flex: 1;
+    }
+    .drive-thumb {
+      aspect-ratio: 1;
+      border-radius: 7px;
+      overflow: hidden;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: all 0.18s;
+      background: var(--surface);
+    }
+    .drive-thumb:hover { border-color: var(--accent); transform: scale(1.03); }
+    .drive-thumb.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+    .drive-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .drive-empty {
+      grid-column: 1/-1;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      padding: 20px;
+    }
+
     .at-anchor { position: relative; }
     .at-dropdown {
       position: absolute; top: calc(100% + 5px); left: 0;
@@ -1422,16 +1486,31 @@
 
         <div class="field" style="margin-bottom:0;">
           <label>Reference Image <span style="color:var(--text-muted);font-weight:400;">(optional)</span></label>
-          <div class="ref-dropzone" id="refDropzone">
-            <input type="file" id="refFile" accept="image/png,image/jpeg,image/webp" />
-            <p>Drop a reference image here or click to browse</p>
-            <span>JPG, PNG, WebP — guides the visual style or composition</span>
-          </div>
-          <div class="ref-preview" id="refPreview">
-            <img id="refThumb" src="" alt="Reference" />
-            <div class="ref-preview-bar">
-              <span id="refFileName">reference.jpg</span>
-              <button class="ref-remove" onclick="removeRefImage()">✕ Remove</button>
+          <div class="ref-layout">
+            <!-- Left: upload -->
+            <div class="ref-left">
+              <div class="ref-dropzone" id="refDropzone">
+                <input type="file" id="refFile" accept="image/png,image/jpeg,image/webp" />
+                <p>Drop or click to upload</p>
+                <span>JPG, PNG, WebP</span>
+              </div>
+              <div class="ref-preview" id="refPreview">
+                <img id="refThumb" src="" alt="Reference" />
+                <div class="ref-preview-bar">
+                  <span id="refFileName">reference.jpg</span>
+                  <button class="ref-remove" onclick="removeRefImage()">✕ Remove</button>
+                </div>
+              </div>
+            </div>
+            <!-- Right: Drive browser -->
+            <div class="ref-right">
+              <div class="drive-browser-header">
+                <span>From Drive</span>
+                <button class="drive-refresh" onclick="loadDriveFiles()" title="Refresh">↺</button>
+              </div>
+              <div class="drive-grid" id="driveGrid">
+                <div class="drive-empty">Loading…</div>
+              </div>
             </div>
           </div>
         </div>
@@ -2123,7 +2202,11 @@
             prompt,
             negative_prompt: negPrompt,
             width, height,
-            ...(refImageBase64 ? { reference_image_b64: refImageBase64 } : {})
+            ...(refImageBase64
+              ? { reference_image_b64: refImageBase64 }
+              : document.getElementById('refPreview')?.dataset.driveUrl
+                ? { reference_image_url: document.getElementById('refPreview').dataset.driveUrl }
+                : {})
           })
         });
         const data = await res.json();
@@ -2388,8 +2471,56 @@
       refFile.value = '';
       document.getElementById('refPreview').classList.remove('visible');
       refDropzone.style.display = '';
+      document.querySelectorAll('.drive-thumb').forEach(t => t.classList.remove('selected'));
       syncAtTagBar();
     }
+
+    // ── Drive browser ─────────────────────────────────────
+    let driveFiles = [];
+
+    async function loadDriveFiles() {
+      const grid = document.getElementById('driveGrid');
+      grid.innerHTML = '<div class="drive-empty">Loading…</div>';
+      try {
+        const res = await fetch('/api/drive/files');
+        driveFiles = await res.json();
+        if (!driveFiles.length) {
+          grid.innerHTML = '<div class="drive-empty">No images in Drive folder yet</div>';
+          return;
+        }
+        grid.innerHTML = driveFiles.map((f, i) => `
+          <div class="drive-thumb" id="dthumb-${i}" onclick="selectDriveRef(${i})" title="${f.name}">
+            <img src="${f.thumbnail || f.url}" alt="${f.name}"
+                 onerror="this.src='${f.url}'" loading="lazy" />
+          </div>`).join('');
+      } catch(e) {
+        grid.innerHTML = '<div class="drive-empty">Could not load Drive files</div>';
+      }
+    }
+
+    function selectDriveRef(index) {
+      const f = driveFiles[index];
+      if (!f) return;
+
+      // Set as reference — use Drive URL directly (public HTTPS)
+      refImageBase64 = null; // clear any uploaded file
+      document.getElementById('refThumb').src = f.thumbnail || f.url;
+      document.getElementById('refFileName').textContent = f.name;
+      document.getElementById('refPreview').classList.add('visible');
+      refDropzone.style.display = 'none';
+
+      // Store Drive URL on the element so generateSingle can read it
+      document.getElementById('refPreview').dataset.driveUrl = f.url;
+
+      // Highlight selected thumb
+      document.querySelectorAll('.drive-thumb').forEach(t => t.classList.remove('selected'));
+      document.getElementById(`dthumb-${index}`).classList.add('selected');
+
+      syncAtTagBar();
+    }
+
+    // Load on page ready
+    loadDriveFiles();
 
     // ── Prompt modal ──────────────────────────────────────
     let _modalItem = null;
