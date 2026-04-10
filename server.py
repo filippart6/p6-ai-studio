@@ -738,22 +738,29 @@ def video_status(task_id):
     video_url = None
 
     if status == 'succeeded':
-        # Extract video URL from response content
-        content = data.get('content', [])
-        if isinstance(content, list):
-            for item in content:
-                if item.get('type') == 'video_url':
-                    video_url = item.get('video_url', {}).get('url')
-                    break
+        # Try every known response structure
+        # 1. Top-level content array
+        for item in (data.get('content') or []):
+            if isinstance(item, dict) and item.get('type') == 'video_url':
+                video_url = (item.get('video_url') or {}).get('url')
+                if video_url: break
+        # 2. choices[0].message.content array (chat-style)
         if not video_url:
-            # Fallback: check choices structure
-            choices = data.get('choices', [])
-            if choices:
-                msg = choices[0].get('message', {})
+            for choice in (data.get('choices') or []):
+                msg = choice.get('message') or {}
                 for item in (msg.get('content') or []):
-                    if item.get('type') == 'video_url':
-                        video_url = item.get('video_url', {}).get('url')
-                        break
+                    if isinstance(item, dict) and item.get('type') == 'video_url':
+                        video_url = (item.get('video_url') or {}).get('url')
+                        if video_url: break
+        # 3. Flat top-level url fields
+        if not video_url:
+            video_url = (data.get('video_url') or {}).get('url') or data.get('url') or data.get('video')
+        # 4. output field
+        if not video_url:
+            output = data.get('output') or {}
+            video_url = output.get('url') or output.get('video_url')
+
+        print(f'[video-status] succeeded, video_url={video_url}, keys={list(data.keys())}', flush=True)
 
     return jsonify({'status': status, 'video_url': video_url, 'raw': data})
 

@@ -3862,15 +3862,21 @@
         document.getElementById('vidPollMsg').textContent =
           `Generating your video… ${elapsed}s elapsed (status: ${data.status})`;
 
-        if (data.status === 'succeeded' && data.video_url) {
+        if (data.status === 'succeeded') {
           document.getElementById('vidPoll').style.display = 'none';
-          const player = document.getElementById('vidPlayer');
-          player.src = data.video_url;
-          document.getElementById('vidDownloadLink').href = data.video_url;
-          document.getElementById('vidResult').style.display = 'block';
-          showVidStatus('✓ Video generated!', 'success');
           document.getElementById('vidBtn').classList.remove('loading');
           document.getElementById('vidBtn').disabled = false;
+          if (data.video_url) {
+            const player = document.getElementById('vidPlayer');
+            player.src = data.video_url;
+            document.getElementById('vidDownloadLink').href = data.video_url;
+            document.getElementById('vidResult').style.display = 'block';
+            showVidStatus('✓ Video generated!', 'success');
+          } else {
+            // Succeeded but URL not found — log raw response for debugging
+            console.error('[video] succeeded but no URL found. Raw response:', data.raw);
+            showVidStatus('✗ Video completed but URL could not be extracted — check browser console for raw response', 'error');
+          }
           return;
         }
 
