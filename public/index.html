@@ -2535,16 +2535,6 @@
               <span class="toggle-track"></span>
             </div>
           </label>
-          <label class="toggle-field" for="vidDraft">
-            <div class="toggle-info">
-              <div class="toggle-label-text">Draft mode</div>
-              <div class="toggle-desc">Faster generation, lower quality — good for testing</div>
-            </div>
-            <div class="toggle-switch">
-              <input type="checkbox" id="vidDraft" />
-              <span class="toggle-track"></span>
-            </div>
-          </label>
           <label class="toggle-field" for="vidFixedLens">
             <div class="toggle-info">
               <div class="toggle-label-text">Fixed lens</div>
@@ -2850,13 +2840,28 @@
       document.getElementById('imgPrompt').placeholder = 'A cinematic portrait of an astronaut floating in deep space, ultra realistic, dramatic lighting…';
     }
 
+    // ── Shared fetch helper ───────────────────────────────
+    // Parses JSON; if the server sent HTML instead (expired session →
+    // redirect to the login page), throw a clear message instead of the
+    // cryptic "Unexpected token '<'".
+    async function safeJson(res) {
+      const text = await res.text();
+      try { return JSON.parse(text); }
+      catch {
+        if (text.trimStart().startsWith('<')) {
+          throw new Error('Session expired — refresh the page and log in again');
+        }
+        throw new Error(`Unexpected response (status ${res.status})`);
+      }
+    }
+
     // ── Elements cache ────────────────────────────────────
     let elements = [];
 
     async function loadElements() {
       try {
         const res = await fetch('/api/elements');
-        const data = await res.json();
+        const data = await safeJson(res);
         elements = data.elements || [];
         renderElementsList();
         renderVidElementPicker();
@@ -3127,7 +3132,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt, negative_prompt: negPrompt, width, height, model: selectedImgModel, ...refPayload })
         });
-        const data = await res.json();
+        const data = await safeJson(res);
         if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
 
         return new Promise(resolve => {
@@ -3236,7 +3241,7 @@
         fd.append('noiseReduction', noiseReduction ? 'true' : 'false');
 
         const res = await fetch('/api/clone-voice', { method: 'POST', body: fd });
-        const data = await res.json();
+        const data = await safeJson(res);
         if (!res.ok) throw new Error(data.error || 'Something went wrong');
 
         document.getElementById('resultName').textContent = data.voiceName;
@@ -3737,23 +3742,24 @@
       const statusEl = document.getElementById('elemImgStatus');
       statusEl.textContent = `Uploading ${toUpload.length} image(s)…`;
 
+      let uploadError = '';
       for (const file of toUpload) {
         const localSrc = await readFileAsDataURL(file);
         const fd = new FormData();
         fd.append('image', file);
         try {
           const res = await fetch('/api/elements/upload-image', { method: 'POST', body: fd });
-          const data = await res.json();
-          if (data.url) {
-            elemUploadedImages.push({ url: data.url, localSrc });
-            renderElemImgStrip();
-          }
+          const data = await safeJson(res);
+          if (!res.ok || !data.url) throw new Error(data.error || `upload failed (${res.status})`);
+          elemUploadedImages.push({ url: data.url, localSrc });
+          renderElemImgStrip();
         } catch(e) {
-          statusEl.textContent = 'Upload failed: ' + e.message;
+          uploadError = `✗ ${file.name}: ${e.message}`;
         }
       }
 
-      statusEl.textContent = elemUploadedImages.length > 0 ? `${elemUploadedImages.length} image(s) ready` : '';
+      statusEl.textContent = uploadError ||
+        (elemUploadedImages.length > 0 ? `${elemUploadedImages.length} image(s) ready` : '');
       document.getElementById('elemCreateBtn').disabled =
         !document.getElementById('elemLabel').value.trim() || elemUploadedImages.length === 0;
       // Reset file input so same file can be re-picked
@@ -3797,6 +3803,13 @@
       });
     }
 
+    // Parse a response with a friendly session-expiry message; throws on !ok
+    async function uploadJson(res) {
+      const data = await safeJson(res);
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      return data;
+    }
+
     async function createElement() {
       const label = document.getElementById('elemLabel').value.trim();
       if (!label || elemUploadedImages.length === 0) return;
@@ -3819,8 +3832,7 @@
             description: document.getElementById('elemDesc').value.trim()
           })
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+        const data = await uploadJson(res);
 
         // Reset form
         document.getElementById('elemLabel').value = '';
@@ -4048,7 +4060,7 @@
       fd.append('image', file);
       try {
         const res = await fetch('/api/elements/upload-image', { method: 'POST', body: fd });
-        const data = await res.json();
+        const data = await uploadJson(res);
         if (!data.url) throw new Error('No URL returned');
 
         if (slot === 'start') {
@@ -4193,8 +4205,8 @@
         try {
           const fd = new FormData(); fd.append('file', file);
           const res = await fetch('/api/upload-asset', { method: 'POST', body: fd });
-          const data = await res.json();
-          if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed');
+          const data = await uploadJson(res);
+          if (!data.url) throw new Error('Upload failed');
           item.url = data.url; item.uploading = false;
           status.textContent = '';
         } catch (e) {
@@ -4274,7 +4286,6 @@
           n: quantity,
           seed: seed >= 0 ? seed : -1,
           with_audio: document.getElementById('vidSound').checked,
-          draft_mode: document.getElementById('vidDraft').checked,
           fixed_lens: document.getElementById('vidFixedLens').checked,
         };
         if (vidMode === 'frames') {
@@ -4292,7 +4303,7 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         });
-        const data = await res.json();
+        const data = await safeJson(res);
         if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
 
         showVidStatus(`Job submitted — polling for result…`, 'info');
