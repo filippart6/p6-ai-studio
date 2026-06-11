@@ -984,5 +984,5 @@ def video_status(task_id):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 3000))
-    print(f'Voice Clone server running at http://localhost:{port}')
+    print(f'P6 AI Studio server running at http://localhost:{port}')
     app.run(host='0.0.0.0', port=port, debug=False)
