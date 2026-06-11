@@ -810,6 +810,42 @@ def element_upload_image():
     return jsonify({'url': url})
 
 
+# Mime/kind lookup for generic reference-asset uploads (images, video, audio)
+_ASSET_MIME = {
+    '.jpg': ('image', 'image/jpeg'), '.jpeg': ('image', 'image/jpeg'),
+    '.png': ('image', 'image/png'),  '.webp': ('image', 'image/webp'),
+    '.gif': ('image', 'image/gif'),
+    '.mp4': ('video', 'video/mp4'),  '.mov': ('video', 'video/quicktime'),
+    '.webm': ('video', 'video/webm'),'.m4v': ('video', 'video/x-m4v'),
+    '.mp3': ('audio', 'audio/mpeg'), '.wav': ('audio', 'audio/wav'),
+    '.m4a': ('audio', 'audio/mp4'),  '.aac': ('audio', 'audio/aac'),
+    '.ogg': ('audio', 'audio/ogg'),
+}
+
+@app.route('/api/upload-asset', methods=['POST'])
+@login_required
+def upload_asset():
+    """Upload a reference asset (image/video/audio) to Drive, return {url, kind}."""
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file'}), 400
+    f = request.files['file']
+    ext = Path(f.filename).suffix.lower() if f.filename else ''
+    kind, mime = _ASSET_MIME.get(ext, (None, None))
+    if not kind:
+        return jsonify({'error': f'Unsupported file type: {ext or "unknown"}'}), 400
+    filename = f'ref_{uuid.uuid4().hex}{ext}'
+    file_bytes = f.read()
+    _, url = drive_upload(file_bytes, filename, mime)
+    if not url:
+        (UPLOADS_DIR / filename).write_bytes(file_bytes)
+        railway_domain = os.environ.get('RAILWAY_PUBLIC_DOMAIN')
+        if railway_domain:
+            url = f'https://{railway_domain}/uploads/{filename}'
+        else:
+            url = f'http://localhost:{os.environ.get("PORT", 3000)}/uploads/{filename}'
+    return jsonify({'url': url, 'kind': kind})
+
+
 # ── Video generation routes ───────────────────────────────────────────────────
 
 def _resolve_video_model(requested_model):
@@ -849,47 +885,74 @@ def generate_video():
     duration = int(body.get('duration', 5))
     duration = max(4, min(12, duration))
 
-    # ── Build ordered reference images (Seedance 2.0 format) ─────────────────
-    # Seedance 2.0 numbers reference images as "Image 1", "Image 2"… by their
-    # order in the content array; the prompt text says how each is used. We pass
-    # the start frame, optional end frame, and any selected Elements all as
-    # role="reference_image" entries, then prepend a numbered legend to the prompt.
-    refs = []  # ordered list of {url, desc}
-    refs.append({'url': start_frame_url, 'desc': 'the opening frame of the video'})
+    # ── Build ordered references (Seedance 2.0 format) ──────────────────────
+    # Seedance 2.0 numbers references "Image 1/2…", "Video 1…", "Audio 1…" by
+    # their order in the content array; the prompt text says how each is used.
+    # We gather, in order:
+    #   images : start frame, optional end frame, library Elements, uploaded images
+    #   videos : uploaded reference videos
+    #   audios : uploaded reference audio
+    # then prepend a numbered legend and append role-tagged content entries.
+    img_refs = []  # {url, desc}
+    vid_refs = []  # {url, desc}
+    aud_refs = []  # {url, desc}
+
+    img_refs.append({'url': start_frame_url, 'desc': 'the opening frame of the video'})
     end_frame_url = body.get('end_frame_url', '').strip()
     if end_frame_url:
-        refs.append({'url': end_frame_url, 'desc': 'the final frame of the video'})
+        img_refs.append({'url': end_frame_url, 'desc': 'the final frame of the video'})
 
-    # Elements: {name, label, type, description, images:[urls]}
+    # Library Elements: {name, label, type, description, images:[urls]}
     for el in (body.get('elements') or []):
         name = (el.get('name') or '').strip()
         label = (el.get('label') or name)
         desc = (el.get('description') or '').strip()
         etype = el.get('type') or 'character'
         imgs = el.get('images') or []
-        # Expand any @name mention in the prompt into the readable label
-        if name:
+        if name:  # expand any @name mention into the readable label
             prompt = _re.sub(rf'@{_re.escape(name)}\b', label, prompt, flags=_re.IGNORECASE)
         if imgs:
             kind = 'location' if etype == 'location' else 'character'
-            legend_desc = f'the {kind} {label}' + (f' ({desc})' if desc else '')
-            refs.append({'url': imgs[0], 'desc': legend_desc})
+            img_refs.append({'url': imgs[0],
+                             'desc': f'the {kind} {label}' + (f' ({desc})' if desc else '')})
 
-    # ARK allows up to ~9 reference images total
-    refs = refs[:9]
+    # Per-video uploaded reference assets: each {url, label}
+    def _clean(items):
+        out = []
+        for it in (items or []):
+            url = (it.get('url') or '').strip()
+            if url:
+                out.append({'url': url, 'desc': (it.get('label') or '').strip()})
+        return out
+
+    for it in _clean(body.get('ref_images')):
+        img_refs.append({'url': it['url'], 'desc': it['desc'] or 'a reference image'})
+    for it in _clean(body.get('ref_videos')):
+        vid_refs.append({'url': it['url'], 'desc': it['desc'] or 'a reference video for motion and style'})
+    for it in _clean(body.get('ref_audios')):
+        aud_refs.append({'url': it['url'], 'desc': it['desc'] or 'reference background audio'})
+
+    # ARK limits: up to 9 images + 3 videos + 3 audio
+    img_refs = img_refs[:9]
+    vid_refs = vid_refs[:3]
+    aud_refs = aud_refs[:3]
 
     # Numbered reference legend prepended to the prompt
-    legend = ' '.join(f'Image {i+1} is {r["desc"]}.' for i, r in enumerate(refs))
+    legend_parts = []
+    legend_parts += [f'Image {i+1} is {r["desc"]}.' for i, r in enumerate(img_refs)]
+    legend_parts += [f'Video {i+1} is {r["desc"]}.' for i, r in enumerate(vid_refs)]
+    legend_parts += [f'Audio {i+1} is {r["desc"]}.' for i, r in enumerate(aud_refs)]
+    legend = ' '.join(legend_parts)
     base_prompt = prompt or 'animate this scene naturally'
     final_text = f'{legend} {base_prompt}'.strip()
 
     content = [{'type': 'text', 'text': final_text}]
-    for r in refs:
-        content.append({
-            'type': 'image_url',
-            'image_url': {'url': r['url']},
-            'role': 'reference_image',
-        })
+    for r in img_refs:
+        content.append({'type': 'image_url', 'image_url': {'url': r['url']}, 'role': 'reference_image'})
+    for r in vid_refs:
+        content.append({'type': 'video_url', 'video_url': {'url': r['url']}, 'role': 'reference_video'})
+    for r in aud_refs:
+        content.append({'type': 'audio_url', 'audio_url': {'url': r['url']}, 'role': 'reference_audio'})
 
     # ── Top-level params (Seedance 2.0 uses JSON fields, not inline --flags) ──
     payload = {
@@ -915,7 +978,8 @@ def generate_video():
         payload['n'] = n
 
     _log_params = {k: v for k, v in payload.items() if k != 'content'}
-    print(f'[video] refs={len(refs)} params={_log_params} text="{final_text[:140]}"', flush=True)
+    print(f'[video] refs: {len(img_refs)} img / {len(vid_refs)} vid / {len(aud_refs)} aud; '
+          f'params={_log_params} text="{final_text[:140]}"', flush=True)
 
     try:
         resp = requests.post(

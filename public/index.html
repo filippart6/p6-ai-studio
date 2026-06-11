@@ -1446,6 +1446,61 @@
     }
     .vid-elem-empty a { color: var(--accent2); cursor: pointer; text-decoration: underline; }
 
+    /* ── Reference asset composer ── */
+    .ref-asset-strip {
+      display: flex; flex-wrap: wrap; gap: 10px;
+      margin-top: 4px; margin-bottom: 8px;
+    }
+    .ref-asset-strip:empty { display: none; }
+    .ref-asset-item {
+      position: relative;
+      width: 150px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface2);
+      overflow: hidden;
+    }
+    .ref-asset-thumb {
+      width: 100%; height: 84px;
+      object-fit: cover; display: block; background: var(--bg);
+    }
+    .ref-asset-icon {
+      width: 100%; height: 84px;
+      display: flex; align-items: center; justify-content: center;
+      background: var(--bg); color: var(--accent2);
+    }
+    .ref-asset-icon svg { width: 26px; height: 26px; }
+    .ref-asset-badge {
+      position: absolute; top: 6px; left: 6px;
+      font-size: 0.6rem; font-weight: 700;
+      background: rgba(10,10,15,0.78); color: #fff;
+      padding: 2px 7px; border-radius: 20px;
+      backdrop-filter: blur(4px);
+    }
+    .ref-asset-item input.ref-asset-label {
+      width: 100%; border: none; border-top: 1px solid var(--border);
+      background: transparent; color: var(--text);
+      font-size: 0.72rem; padding: 7px 8px; outline: none;
+    }
+    .ref-asset-item input.ref-asset-label::placeholder { color: var(--text-muted); }
+    .ref-asset-remove {
+      position: absolute; top: 6px; right: 6px;
+      width: 20px; height: 20px; border-radius: 50%;
+      background: var(--error); color: #fff; border: none;
+      font-size: 0.7rem; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .ref-asset-add {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 8px 14px; border-radius: 10px;
+      border: 1.5px dashed var(--border); background: var(--surface2);
+      color: var(--text-muted); font-size: 0.78rem; font-weight: 500;
+      cursor: pointer; transition: border-color 0.2s, color 0.2s;
+    }
+    .ref-asset-add:hover { border-color: var(--accent); color: var(--accent); }
+    .ref-asset-add.hidden { display: none; }
+    .ref-asset-status { font-size: 0.76rem; color: var(--text-muted); min-height: 16px; margin-top: 8px; }
+
     /* ── Video settings ── */
     .vid-ratio-grid {
       display: flex;
@@ -2361,12 +2416,55 @@
 
       <div class="card">
         <div class="card-title">
-          Elements
+          Saved Elements
           <span style="font-size:0.7rem;font-weight:400;color:var(--text-muted);margin-left:8px;">
-            Add saved characters &amp; locations as references — or type <code style="background:var(--surface2);padding:1px 5px;border-radius:5px;">@name</code> in the prompt
+            Add characters &amp; locations from your library — or type <code style="background:var(--surface2);padding:1px 5px;border-radius:5px;">@name</code> in the prompt
           </span>
         </div>
         <div class="vid-elem-grid" id="vidElemGrid"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          Reference Assets
+          <span style="font-size:0.7rem;font-weight:400;color:var(--text-muted);margin-left:8px;">
+            Images, video &amp; audio used inside this video — reference them in the prompt as <code style="background:var(--surface2);padding:1px 5px;border-radius:5px;">Image&nbsp;1</code>, <code style="background:var(--surface2);padding:1px 5px;border-radius:5px;">Video&nbsp;1</code>, <code style="background:var(--surface2);padding:1px 5px;border-radius:5px;">Audio&nbsp;1</code>
+          </span>
+        </div>
+
+        <!-- Images -->
+        <div class="field" style="margin-bottom:14px;">
+          <label>Reference Images <span style="color:var(--text-muted);font-weight:400;">(up to 9 — props, products, characters, scenes)</span></label>
+          <div class="ref-asset-strip" id="refImgStrip"></div>
+          <div class="ref-asset-add" id="refImgAdd" onclick="document.getElementById('refImgFile').click()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add image
+          </div>
+          <input type="file" id="refImgFile" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none;" onchange="onRefAssetPick(this,'image')" />
+        </div>
+
+        <!-- Video -->
+        <div class="field" style="margin-bottom:14px;">
+          <label>Reference Video <span style="color:var(--text-muted);font-weight:400;">(up to 3 — motion / style guide)</span></label>
+          <div class="ref-asset-strip" id="refVidStrip"></div>
+          <div class="ref-asset-add" id="refVidAdd" onclick="document.getElementById('refVidFile').click()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Add video
+          </div>
+          <input type="file" id="refVidFile" accept="video/mp4,video/quicktime,video/webm,video/x-m4v" multiple style="display:none;" onchange="onRefAssetPick(this,'video')" />
+        </div>
+
+        <!-- Audio -->
+        <div class="field" style="margin-bottom:0;">
+          <label>Reference Audio <span style="color:var(--text-muted);font-weight:400;">(up to 3 — music / voice)</span></label>
+          <div class="ref-asset-strip" id="refAudStrip"></div>
+          <div class="ref-asset-add" id="refAudAdd" onclick="document.getElementById('refAudFile').click()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+            Add audio
+          </div>
+          <input type="file" id="refAudFile" accept="audio/mpeg,audio/wav,audio/mp4,audio/aac,audio/ogg" multiple style="display:none;" onchange="onRefAssetPick(this,'audio')" />
+        </div>
+        <div class="ref-asset-status" id="refAssetStatus"></div>
       </div>
 
       <div class="card">
@@ -4018,6 +4116,82 @@
         }));
     }
 
+    // ── Reference assets (per-video images / video / audio) ───────────────
+    const refAssets = { image: [], video: [], audio: [] };   // each item: {url, label, localSrc}
+    const REF_LIMITS = { image: 9, video: 3, audio: 3 };
+    const REF_CFG = {
+      image: { strip: 'refImgStrip', add: 'refImgAdd', file: 'refImgFile' },
+      video: { strip: 'refVidStrip', add: 'refVidAdd', file: 'refVidFile' },
+      audio: { strip: 'refAudStrip', add: 'refAudAdd', file: 'refAudFile' },
+    };
+
+    async function onRefAssetPick(input, kind) {
+      const files = Array.from(input.files || []);
+      input.value = '';
+      const room = REF_LIMITS[kind] - refAssets[kind].length;
+      if (room <= 0) return;
+      const status = document.getElementById('refAssetStatus');
+      for (const file of files.slice(0, room)) {
+        const localSrc = kind === 'image' ? await readFileAsDataURL(file) : '';
+        const item = { url: '', label: '', localSrc, name: file.name, uploading: true };
+        refAssets[kind].push(item);
+        renderRefAssets(kind);
+        status.textContent = `Uploading ${file.name}…`;
+        try {
+          const fd = new FormData(); fd.append('file', file);
+          const res = await fetch('/api/upload-asset', { method: 'POST', body: fd });
+          const data = await res.json();
+          if (!res.ok || !data.url) throw new Error(data.error || 'Upload failed');
+          item.url = data.url; item.uploading = false;
+          status.textContent = '';
+        } catch (e) {
+          refAssets[kind] = refAssets[kind].filter(x => x !== item);
+          status.textContent = '✗ ' + e.message;
+        }
+        renderRefAssets(kind);
+      }
+    }
+
+    const REF_ICON = {
+      video: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
+      audio: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+    };
+    const REF_BADGE = { image: 'Image', video: 'Video', audio: 'Audio' };
+
+    function renderRefAssets(kind) {
+      const cfg = REF_CFG[kind];
+      const strip = document.getElementById(cfg.strip);
+      if (!strip) return;
+      strip.innerHTML = refAssets[kind].map((it, i) => {
+        const media = (kind === 'image' && it.localSrc)
+          ? `<img class="ref-asset-thumb" src="${it.localSrc}" alt="" />`
+          : `<div class="ref-asset-icon">${REF_ICON[kind] || ''}</div>`;
+        const badge = `${REF_BADGE[kind]} ${i + 1}${it.uploading ? ' · …' : ''}`;
+        return `
+          <div class="ref-asset-item">
+            ${media}
+            <span class="ref-asset-badge">${badge}</span>
+            <button class="ref-asset-remove" onclick="removeRefAsset('${kind}', ${i})">✕</button>
+            <input class="ref-asset-label" type="text" placeholder="what is this? (optional)"
+              value="${(it.label || '').replace(/"/g, '&quot;')}"
+              oninput="refAssets['${kind}'][${i}].label = this.value" />
+          </div>`;
+      }).join('');
+      // hide the add button at the limit
+      const addBtn = document.getElementById(cfg.add);
+      if (addBtn) addBtn.classList.toggle('hidden', refAssets[kind].length >= REF_LIMITS[kind]);
+    }
+
+    function removeRefAsset(kind, index) {
+      refAssets[kind].splice(index, 1);
+      renderRefAssets(kind);
+    }
+
+    // Build the API payload arrays (only fully-uploaded items with a URL)
+    function collectRefAssets(kind) {
+      return refAssets[kind].filter(it => it.url).map(it => ({ url: it.url, label: it.label || '' }));
+    }
+
     async function generateVideo() {
       if (!vidStartUrl) return;
 
@@ -4046,6 +4220,9 @@
           draft_mode: document.getElementById('vidDraft').checked,
           fixed_lens: document.getElementById('vidFixedLens').checked,
           elements: collectVidElements(),
+          ref_images: collectRefAssets('image'),
+          ref_videos: collectRefAssets('video'),
+          ref_audios: collectRefAssets('audio'),
         };
         if (vidEndUrl) body.end_frame_url = vidEndUrl;
 
