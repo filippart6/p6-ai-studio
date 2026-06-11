@@ -849,6 +849,30 @@ def generate_video():
     duration = int(body.get('duration', 5))
     duration = max(4, min(12, duration))
 
+    # ── Elements (named character/location references) ───────────────────
+    # Each element: {name, label, type, role, description, images:[urls]}
+    # We (a) expand any @name mention in the prompt into a readable description
+    # so the model gets the context, and (b) collect the reference image URLs
+    # to attach to the request. The exact attach format for Seedance 2.0 is
+    # set in ELEMENT_REF_MODE — adjust once the API format is confirmed.
+    elements_in = body.get('elements') or []
+    element_ref_images = []   # list of {url, role, label}
+    for el in elements_in:
+        name = (el.get('name') or '').strip()
+        label = (el.get('label') or name)
+        desc = (el.get('description') or '').strip()
+        role = el.get('role') or ('environment' if el.get('type') == 'location' else 'subject')
+        imgs = el.get('images') or []
+        # Expand @name → "[label: description]" (or just label) in the prompt
+        if name:
+            replacement = f'[{label}: {desc}]' if desc else f'[{label}]'
+            prompt = _re.sub(rf'@{_re.escape(name)}\b', replacement, prompt, flags=_re.IGNORECASE)
+        # Collect the first reference image for this element
+        if imgs:
+            element_ref_images.append({'url': imgs[0], 'role': role, 'label': label})
+    # ARK allows up to ~9 reference images
+    element_ref_images = element_ref_images[:9]
+
     # Build inline flags — Seedance takes params embedded in the text prompt
     flags = []
     flags.append(f'--duration {duration}')
@@ -877,6 +901,23 @@ def generate_video():
     end_frame_url = body.get('end_frame_url', '').strip()
     if end_frame_url:
         content.append({'type': 'image_url', 'image_url': {'url': end_frame_url}})
+
+    # Attach element reference images. ELEMENT_REF_MODE controls the wire format:
+    #   'off'            → don't attach images (text description expansion only) — SAFE DEFAULT
+    #   'image_url'      → extra {type:image_url, image_url:{url}} entries (no role)
+    #   'image_url_role' → extra {type:image_url, image_url:{url}, role:<subject|environment>} entries
+    # Default is 'off' until the Seedance 2.0 reference-image format is confirmed,
+    # so a guessed shape can't break the generation call. Flip via env var once known.
+    ELEMENT_REF_MODE = os.environ.get('ELEMENT_REF_MODE', 'off')
+    if ELEMENT_REF_MODE != 'off':
+        for ref in element_ref_images:
+            entry = {'type': 'image_url', 'image_url': {'url': ref['url']}}
+            if ELEMENT_REF_MODE == 'image_url_role':
+                entry['role'] = ref['role']
+            content.append(entry)
+    if element_ref_images:
+        print(f'[video] {len(element_ref_images)} element ref image(s) collected, '
+              f'mode={ELEMENT_REF_MODE}, roles={[r["role"] for r in element_ref_images]}', flush=True)
 
     payload = {
         'model': model_id,
