@@ -849,86 +849,73 @@ def generate_video():
     duration = int(body.get('duration', 5))
     duration = max(4, min(12, duration))
 
-    # ── Elements (named character/location references) ───────────────────
-    # Each element: {name, label, type, role, description, images:[urls]}
-    # We (a) expand any @name mention in the prompt into a readable description
-    # so the model gets the context, and (b) collect the reference image URLs
-    # to attach to the request. The exact attach format for Seedance 2.0 is
-    # set in ELEMENT_REF_MODE — adjust once the API format is confirmed.
-    elements_in = body.get('elements') or []
-    element_ref_images = []   # list of {url, role, label}
-    for el in elements_in:
+    # ── Build ordered reference images (Seedance 2.0 format) ─────────────────
+    # Seedance 2.0 numbers reference images as "Image 1", "Image 2"… by their
+    # order in the content array; the prompt text says how each is used. We pass
+    # the start frame, optional end frame, and any selected Elements all as
+    # role="reference_image" entries, then prepend a numbered legend to the prompt.
+    refs = []  # ordered list of {url, desc}
+    refs.append({'url': start_frame_url, 'desc': 'the opening frame of the video'})
+    end_frame_url = body.get('end_frame_url', '').strip()
+    if end_frame_url:
+        refs.append({'url': end_frame_url, 'desc': 'the final frame of the video'})
+
+    # Elements: {name, label, type, description, images:[urls]}
+    for el in (body.get('elements') or []):
         name = (el.get('name') or '').strip()
         label = (el.get('label') or name)
         desc = (el.get('description') or '').strip()
-        role = el.get('role') or ('environment' if el.get('type') == 'location' else 'subject')
+        etype = el.get('type') or 'character'
         imgs = el.get('images') or []
-        # Expand @name → "[label: description]" (or just label) in the prompt
+        # Expand any @name mention in the prompt into the readable label
         if name:
-            replacement = f'[{label}: {desc}]' if desc else f'[{label}]'
-            prompt = _re.sub(rf'@{_re.escape(name)}\b', replacement, prompt, flags=_re.IGNORECASE)
-        # Collect the first reference image for this element
+            prompt = _re.sub(rf'@{_re.escape(name)}\b', label, prompt, flags=_re.IGNORECASE)
         if imgs:
-            element_ref_images.append({'url': imgs[0], 'role': role, 'label': label})
-    # ARK allows up to ~9 reference images
-    element_ref_images = element_ref_images[:9]
+            kind = 'location' if etype == 'location' else 'character'
+            legend_desc = f'the {kind} {label}' + (f' ({desc})' if desc else '')
+            refs.append({'url': imgs[0], 'desc': legend_desc})
 
-    # Build inline flags — Seedance takes params embedded in the text prompt
-    flags = []
-    flags.append(f'--duration {duration}')
-    ratio = body.get('ratio', '')
-    if ratio and ratio != 'Auto':
-        flags.append(f'--ratio {ratio}')
-    resolution = body.get('resolution', '')
-    if resolution:
-        flags.append(f'--resolution {resolution}')
-    seed = body.get('seed', -1)
-    if seed is not None and int(seed) >= 0:
-        flags.append(f'--seed {int(seed)}')
-    if not body.get('with_audio', True):
-        flags.append('--audio false')
-    if body.get('draft_mode'):
-        flags.append('--draft true')
-    camera_fixed = body.get('fixed_lens', False)
-    flags.append(f'--camerafixed {str(camera_fixed).lower()}')
+    # ARK allows up to ~9 reference images total
+    refs = refs[:9]
 
-    text_with_flags = (prompt or 'animate this scene naturally') + '  ' + '  '.join(flags)
+    # Numbered reference legend prepended to the prompt
+    legend = ' '.join(f'Image {i+1} is {r["desc"]}.' for i, r in enumerate(refs))
+    base_prompt = prompt or 'animate this scene naturally'
+    final_text = f'{legend} {base_prompt}'.strip()
 
-    content = [
-        {'type': 'text', 'text': text_with_flags},
-        {'type': 'image_url', 'image_url': {'url': start_frame_url}},
-    ]
-    end_frame_url = body.get('end_frame_url', '').strip()
-    if end_frame_url:
-        content.append({'type': 'image_url', 'image_url': {'url': end_frame_url}})
+    content = [{'type': 'text', 'text': final_text}]
+    for r in refs:
+        content.append({
+            'type': 'image_url',
+            'image_url': {'url': r['url']},
+            'role': 'reference_image',
+        })
 
-    # Attach element reference images. ELEMENT_REF_MODE controls the wire format:
-    #   'off'            → don't attach images (text description expansion only) — SAFE DEFAULT
-    #   'image_url'      → extra {type:image_url, image_url:{url}} entries (no role)
-    #   'image_url_role' → extra {type:image_url, image_url:{url}, role:<subject|environment>} entries
-    # Default is 'off' until the Seedance 2.0 reference-image format is confirmed,
-    # so a guessed shape can't break the generation call. Flip via env var once known.
-    ELEMENT_REF_MODE = os.environ.get('ELEMENT_REF_MODE', 'off')
-    if ELEMENT_REF_MODE != 'off':
-        for ref in element_ref_images:
-            entry = {'type': 'image_url', 'image_url': {'url': ref['url']}}
-            if ELEMENT_REF_MODE == 'image_url_role':
-                entry['role'] = ref['role']
-            content.append(entry)
-    if element_ref_images:
-        print(f'[video] {len(element_ref_images)} element ref image(s) collected, '
-              f'mode={ELEMENT_REF_MODE}, roles={[r["role"] for r in element_ref_images]}', flush=True)
-
+    # ── Top-level params (Seedance 2.0 uses JSON fields, not inline --flags) ──
     payload = {
         'model': model_id,
         'content': content,
+        'generate_audio': bool(body.get('with_audio', True)),
+        'watermark': False,
+        'duration': duration,
     }
-
+    ratio = body.get('ratio', '')
+    if ratio and ratio != 'Auto':
+        payload['ratio'] = ratio
+    resolution = body.get('resolution', '')
+    if resolution:
+        payload['resolution'] = resolution
+    seed = body.get('seed', -1)
+    if seed is not None and int(seed) >= 0:
+        payload['seed'] = int(seed)
+    if body.get('fixed_lens'):
+        payload['camerafixed'] = True
     n = int(body.get('n', 1))
     if n > 1:
         payload['n'] = n
 
-    print(f'[video] model={model_id} text="{text_with_flags}"', flush=True)
+    _log_params = {k: v for k, v in payload.items() if k != 'content'}
+    print(f'[video] refs={len(refs)} params={_log_params} text="{final_text[:140]}"', flush=True)
 
     try:
         resp = requests.post(
