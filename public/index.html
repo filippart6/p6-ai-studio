@@ -1607,7 +1607,11 @@
 
     <div class="topbar-right">
       <nav class="tabs-nav">
-        <button class="tab-btn active" onclick="switchTab('image', this)">
+        <button class="tab-btn active" onclick="switchTab('video', this)">
+          <span class="tab-dot"></span>
+          Video Generation
+        </button>
+        <button class="tab-btn" onclick="switchTab('image', this)">
           <span class="tab-dot"></span>
           Image Generation
         </button>
@@ -1624,17 +1628,13 @@
           <span class="tab-dot"></span>
           Elements
         </button>
-        <button class="tab-btn" onclick="switchTab('video', this)">
-          <span class="tab-dot"></span>
-          Video
-        </button>
       </nav>
       <a href="/logout" class="signout">Sign out</a>
     </div>
   </div>
 
   <!-- ═══════════════════════════════════════════════ IMAGE TAB -->
-  <div class="tab-panel active" id="tab-image">
+  <div class="tab-panel" id="tab-image">
     <div class="page">
       <div class="page-header">
         <h2>Image Generation</h2>
@@ -2302,7 +2302,7 @@
   </div>
 
   <!-- ═══════════════════════════════════════════════ VIDEO TAB -->
-  <div class="tab-panel" id="tab-video">
+  <div class="tab-panel active" id="tab-video">
     <div class="page">
       <div class="page-header">
         <h2>Video Generation</h2>
@@ -3402,7 +3402,7 @@
 
     function reuseSettings(item) {
       // Switch to image tab
-      const imageTabBtn = document.querySelector('.tab-btn');
+      const imageTabBtn = document.querySelector(".tab-btn[onclick*=\"'image'\"]");
       switchTab('image', imageTabBtn);
 
       // Fill prompt & negative
