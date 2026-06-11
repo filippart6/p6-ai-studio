@@ -872,11 +872,7 @@ def generate_video():
     if not body:
         return jsonify({'error': 'No data'}), 400
 
-    start_frame_url = body.get('start_frame_url', '').strip()
-    if not start_frame_url:
-        return jsonify({'error': 'Start frame image is required'}), 400
-
-    requested_model = (body.get('model') or 'seedance-1-5-pro').strip().lower()
+    requested_model = (body.get('model') or 'seedance-2-0').strip().lower()
     model_id, api_key, err = _resolve_video_model(requested_model)
     if err:
         return jsonify({'error': err}), 500
@@ -885,59 +881,77 @@ def generate_video():
     duration = int(body.get('duration', 5))
     duration = max(4, min(12, duration))
 
-    # ── Build ordered references (Seedance 2.0 format) ──────────────────────
-    # Seedance 2.0 numbers references "Image 1/2…", "Video 1…", "Audio 1…" by
-    # their order in the content array; the prompt text says how each is used.
-    # We gather, in order:
-    #   images : start frame, optional end frame, library Elements, uploaded images
-    #   videos : uploaded reference videos
-    #   audios : uploaded reference audio
-    # then prepend a numbered legend and append role-tagged content entries.
-    img_refs = []  # {url, desc}
-    vid_refs = []  # {url, desc}
-    aud_refs = []  # {url, desc}
+    # ── Workflow mode ────────────────────────────────────────────────────────
+    #   'text'     → prompt only (text-to-video)
+    #   'frames'   → start frame (role first_frame) + optional end frame (last_frame)
+    #   'elements' → reference images / videos / audio (roles reference_*)
+    start_frame_url = (body.get('start_frame_url') or '').strip()
+    end_frame_url = (body.get('end_frame_url') or '').strip()
+    mode = (body.get('mode') or '').strip().lower()
+    if mode not in ('text', 'frames', 'elements'):
+        # Back-compat: infer from what was sent
+        mode = 'frames' if start_frame_url else 'text'
 
-    img_refs.append({'url': start_frame_url, 'desc': 'the opening frame of the video'})
-    end_frame_url = body.get('end_frame_url', '').strip()
-    if end_frame_url:
-        img_refs.append({'url': end_frame_url, 'desc': 'the final frame of the video'})
+    frame_entries = []   # first/last frame content entries (frames mode)
+    img_refs = []        # {url, desc} reference images (elements mode)
+    vid_refs = []
+    aud_refs = []
 
-    # Library Elements: {name, label, type, description, images:[urls]}
-    for el in (body.get('elements') or []):
-        name = (el.get('name') or '').strip()
-        label = (el.get('label') or name)
-        desc = (el.get('description') or '').strip()
-        etype = el.get('type') or 'character'
-        imgs = el.get('images') or []
-        if name:  # expand any @name mention into the readable label
-            prompt = _re.sub(rf'@{_re.escape(name)}\b', label, prompt, flags=_re.IGNORECASE)
-        if imgs:
-            kind = 'location' if etype == 'location' else 'character'
-            img_refs.append({'url': imgs[0],
-                             'desc': f'the {kind} {label}' + (f' ({desc})' if desc else '')})
+    if mode == 'frames':
+        if not start_frame_url:
+            return jsonify({'error': 'Start frame image is required for the Frames workflow'}), 400
+        frame_entries.append({'type': 'image_url', 'image_url': {'url': start_frame_url},
+                              'role': 'first_frame'})
+        if end_frame_url:
+            frame_entries.append({'type': 'image_url', 'image_url': {'url': end_frame_url},
+                                  'role': 'last_frame'})
 
-    # Per-video uploaded reference assets: each {url, label}
-    def _clean(items):
-        out = []
-        for it in (items or []):
-            url = (it.get('url') or '').strip()
-            if url:
-                out.append({'url': url, 'desc': (it.get('label') or '').strip()})
-        return out
+    elif mode == 'elements':
+        # Library Elements: {name, label, type, description, images:[urls]}
+        for el in (body.get('elements') or []):
+            name = (el.get('name') or '').strip()
+            label = (el.get('label') or name)
+            desc = (el.get('description') or '').strip()
+            etype = el.get('type') or 'character'
+            imgs = el.get('images') or []
+            if name:  # expand any @name mention into the readable label
+                prompt = _re.sub(rf'@{_re.escape(name)}\b', label, prompt, flags=_re.IGNORECASE)
+            if imgs:
+                kind = 'location' if etype == 'location' else 'character'
+                img_refs.append({'url': imgs[0],
+                                 'desc': f'the {kind} {label}' + (f' ({desc})' if desc else '')})
 
-    for it in _clean(body.get('ref_images')):
-        img_refs.append({'url': it['url'], 'desc': it['desc'] or 'a reference image'})
-    for it in _clean(body.get('ref_videos')):
-        vid_refs.append({'url': it['url'], 'desc': it['desc'] or 'a reference video for motion and style'})
-    for it in _clean(body.get('ref_audios')):
-        aud_refs.append({'url': it['url'], 'desc': it['desc'] or 'reference background audio'})
+        # Per-video uploaded reference assets: each {url, label}
+        def _clean(items):
+            out = []
+            for it in (items or []):
+                url = (it.get('url') or '').strip()
+                if url:
+                    out.append({'url': url, 'desc': (it.get('label') or '').strip()})
+            return out
 
-    # ARK limits: up to 9 images + 3 videos + 3 audio
-    img_refs = img_refs[:9]
-    vid_refs = vid_refs[:3]
-    aud_refs = aud_refs[:3]
+        for it in _clean(body.get('ref_images')):
+            img_refs.append({'url': it['url'], 'desc': it['desc'] or 'a reference image'})
+        for it in _clean(body.get('ref_videos')):
+            vid_refs.append({'url': it['url'], 'desc': it['desc'] or 'a reference video for motion and style'})
+        for it in _clean(body.get('ref_audios')):
+            aud_refs.append({'url': it['url'], 'desc': it['desc'] or 'reference background audio'})
 
-    # Numbered reference legend prepended to the prompt
+        # ARK limits: up to 9 images + 3 videos + 3 audio
+        img_refs = img_refs[:9]
+        vid_refs = vid_refs[:3]
+        aud_refs = aud_refs[:3]
+
+        if not (img_refs or vid_refs or aud_refs):
+            return jsonify({'error': 'Add at least one element or reference asset for the Elements workflow'}), 400
+
+    else:  # text-to-video
+        if not prompt:
+            return jsonify({'error': 'A prompt is required for text-to-video'}), 400
+
+    # Numbered reference legend (elements mode only) — Seedance 2.0 numbers
+    # references "Image 1/2…", "Video 1…", "Audio 1…" by content-array order,
+    # and the prompt text says how each is used.
     legend_parts = []
     legend_parts += [f'Image {i+1} is {r["desc"]}.' for i, r in enumerate(img_refs)]
     legend_parts += [f'Video {i+1} is {r["desc"]}.' for i, r in enumerate(vid_refs)]
@@ -947,6 +961,7 @@ def generate_video():
     final_text = f'{legend} {base_prompt}'.strip()
 
     content = [{'type': 'text', 'text': final_text}]
+    content.extend(frame_entries)
     for r in img_refs:
         content.append({'type': 'image_url', 'image_url': {'url': r['url']}, 'role': 'reference_image'})
     for r in vid_refs:
@@ -978,8 +993,13 @@ def generate_video():
         payload['n'] = n
 
     _log_params = {k: v for k, v in payload.items() if k != 'content'}
-    print(f'[video] refs: {len(img_refs)} img / {len(vid_refs)} vid / {len(aud_refs)} aud; '
+    print(f'[video] mode={mode} frames={len(frame_entries)} '
+          f'refs: {len(img_refs)} img / {len(vid_refs)} vid / {len(aud_refs)} aud; '
           f'params={_log_params} text="{final_text[:140]}"', flush=True)
+
+    # Debug aid: return the assembled payload without calling the API
+    if body.get('dry_run'):
+        return jsonify({'dry_run': True, 'mode': mode, 'payload': payload})
 
     try:
         resp = requests.post(

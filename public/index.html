@@ -2361,7 +2361,7 @@
     <div class="page">
       <div class="page-header">
         <h2>Video Generation</h2>
-        <p>Animate a still image into video with Seedance 2.0 — upload a start frame and describe the motion</p>
+        <p>Create videos with Seedance 2.0 — from text alone, from start/end frames, or from reference elements</p>
       </div>
 
       <div class="card">
@@ -2370,6 +2370,11 @@
       </div>
 
       <div class="card">
+        <div class="card-title">Workflow</div>
+        <div class="vid-model-grid" id="vidModeGrid"></div>
+      </div>
+
+      <div class="card" id="vidFramesCard">
         <div class="card-title">Frames</div>
         <div class="video-frames-row">
           <!-- Start frame -->
@@ -2414,7 +2419,7 @@
         <div class="at-tag-bar" id="vidAtTagBar"></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="vidSavedElemCard">
         <div class="card-title">
           Saved Elements
           <span style="font-size:0.7rem;font-weight:400;color:var(--text-muted);margin-left:8px;">
@@ -2424,7 +2429,7 @@
         <div class="vid-elem-grid" id="vidElemGrid"></div>
       </div>
 
-      <div class="card">
+      <div class="card" id="vidRefAssetsCard">
         <div class="card-title">
           Reference Assets
           <span style="font-size:0.7rem;font-weight:400;color:var(--text-muted);margin-left:8px;">
@@ -3690,6 +3695,10 @@
       if (name === 'video') renderVidElementPicker();
     };
 
+    // Deterministic startup tab: always open on Video, regardless of any
+    // stale/bfcache DOM state.
+    window.switchTab('video', document.querySelector(".tab-btn[onclick*=\"'video'\"]"));
+
     // After successful image generation, refresh count badge
     const _origGenerate = generateImage;
     window.generateImage = async function() {
@@ -3922,6 +3931,35 @@
 
     renderVidModels();
 
+    // ── Workflow mode (text / frames / elements) ──────────
+    const VID_MODES = [
+      { id: 'text',     name: 'Text to Video',     desc: 'Describe the scene — no images needed' },
+      { id: 'frames',   name: 'Frames to Video',   desc: 'Animate from a start frame (+ optional end)' },
+      { id: 'elements', name: 'Elements to Video', desc: 'Compose from characters, assets & references' },
+    ];
+    let vidMode = 'text';
+
+    function renderVidModes() {
+      const grid = document.getElementById('vidModeGrid');
+      if (!grid) return;
+      grid.innerHTML = VID_MODES.map(m => `
+        <div class="vid-model-opt${m.id === vidMode ? ' selected' : ''}"
+             id="vmode-${m.id}" onclick="setVidMode('${m.id}')">
+          <div class="vid-model-name">${m.name}</div>
+          <div class="vid-model-desc">${m.desc}</div>
+        </div>`).join('');
+    }
+
+    function setVidMode(mode) {
+      vidMode = mode;
+      renderVidModes();
+      document.getElementById('vidFramesCard').style.display    = mode === 'frames'   ? '' : 'none';
+      document.getElementById('vidSavedElemCard').style.display = mode === 'elements' ? '' : 'none';
+      document.getElementById('vidRefAssetsCard').style.display = mode === 'elements' ? '' : 'none';
+      updateVidBtn();
+    }
+    setVidMode(vidMode);
+
     // ── Video ratio + resolution selectors ───────────────
     const VID_RATIOS = ['Auto', '16:9', '9:16', '1:1', '4:3', '3:4', '21:9'];
     const VID_RESOLUTIONS = ['480p', '720p', '1080p'];
@@ -3979,7 +4017,20 @@
     }
 
     function updateVidBtn() {
-      document.getElementById('vidBtn').disabled = !vidStartUrl;
+      const prompt = document.getElementById('vidPrompt').value.trim();
+      let ok = false;
+      if (vidMode === 'text') {
+        ok = !!prompt;
+      } else if (vidMode === 'frames') {
+        ok = !!vidStartUrl;
+      } else { // elements
+        const hasElem = typeof collectVidElements === 'function' &&
+                        collectVidElements().some(el => el.images.length > 0);
+        const hasAsset = typeof collectRefAssets === 'function' &&
+                         (collectRefAssets('image').length || collectRefAssets('video').length || collectRefAssets('audio').length);
+        ok = !!(hasElem || hasAsset);
+      }
+      document.getElementById('vidBtn').disabled = !ok;
     }
 
     async function onVidFramePick(input, slot) {
@@ -4040,6 +4091,7 @@
 
     function handleVidAtKey(e) {
       handleAtKeyFor(e, document.getElementById('vidPrompt'), vidAtDropdown, vidAtTriggerIndex, idx => { vidAtTriggerIndex = idx; });
+      updateVidBtn();
     }
     function hideVidAtDropdown() {
       vidAtDropdown.classList.remove('visible');
@@ -4098,6 +4150,7 @@
         }
       }
       document.getElementById(`velem-${id}`)?.classList.toggle('selected', selectedVidElements.has(id));
+      updateVidBtn();
     }
 
     // Build the list of selected elements with their reference data for the API
@@ -4149,6 +4202,7 @@
           status.textContent = '✗ ' + e.message;
         }
         renderRefAssets(kind);
+        updateVidBtn();
       }
     }
 
@@ -4185,6 +4239,7 @@
     function removeRefAsset(kind, index) {
       refAssets[kind].splice(index, 1);
       renderRefAssets(kind);
+      updateVidBtn();
     }
 
     // Build the API payload arrays (only fully-uploaded items with a URL)
@@ -4193,7 +4248,9 @@
     }
 
     async function generateVideo() {
-      if (!vidStartUrl) return;
+      const promptVal = document.getElementById('vidPrompt').value.trim();
+      if (vidMode === 'text' && !promptVal) return;
+      if (vidMode === 'frames' && !vidStartUrl) return;
 
       const btn = document.getElementById('vidBtn');
       btn.classList.add('loading');
@@ -4208,7 +4265,7 @@
         const seed = parseInt(document.getElementById('vidSeed').value, 10);
         const quantity = parseInt(document.getElementById('vidQuantitySlider').value, 10);
         const body = {
-          start_frame_url: vidStartUrl,
+          mode: vidMode,
           prompt,
           duration: parseInt(document.getElementById('vidDurationSlider').value, 10),
           model: selectedVidModel,
@@ -4219,12 +4276,16 @@
           with_audio: document.getElementById('vidSound').checked,
           draft_mode: document.getElementById('vidDraft').checked,
           fixed_lens: document.getElementById('vidFixedLens').checked,
-          elements: collectVidElements(),
-          ref_images: collectRefAssets('image'),
-          ref_videos: collectRefAssets('video'),
-          ref_audios: collectRefAssets('audio'),
         };
-        if (vidEndUrl) body.end_frame_url = vidEndUrl;
+        if (vidMode === 'frames') {
+          body.start_frame_url = vidStartUrl;
+          if (vidEndUrl) body.end_frame_url = vidEndUrl;
+        } else if (vidMode === 'elements') {
+          body.elements   = collectVidElements();
+          body.ref_images = collectRefAssets('image');
+          body.ref_videos = collectRefAssets('video');
+          body.ref_audios = collectRefAssets('audio');
+        }
 
         const res = await fetch('/api/generate-video', {
           method: 'POST',
