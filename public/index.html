@@ -2335,7 +2335,7 @@
           </div>
           <div class="elem-img-status" id="elemImgStatus"></div>
         </div>
-        <button class="btn btn-primary" id="elemCreateBtn" onclick="createElement()" disabled style="margin-top:4px;">
+        <button class="btn btn-primary" id="elemCreateBtn" onclick="createElementEntry()" disabled style="margin-top:4px;">
           <div class="spinner"></div>
           <span class="btn-text">Create Element</span>
         </button>
@@ -3810,7 +3810,10 @@
       return data;
     }
 
-    async function createElement() {
+    // Named createElementEntry (not createElement) — inline onclick handlers
+    // resolve through document's scope first, so a global createElement()
+    // would be shadowed by document.createElement and never run.
+    async function createElementEntry() {
       const label = document.getElementById('elemLabel').value.trim();
       if (!label || elemUploadedImages.length === 0) return;
 
