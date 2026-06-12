@@ -879,7 +879,7 @@ def generate_video():
 
     prompt = body.get('prompt', '').strip()
     duration = int(body.get('duration', 5))
-    duration = max(4, min(12, duration))
+    duration = max(4, min(15, duration))
 
     # ── Workflow mode ────────────────────────────────────────────────────────
     #   'text'     → prompt only (text-to-video)

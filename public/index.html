@@ -2491,7 +2491,7 @@
         <div class="field">
           <label>Duration</label>
           <div class="vid-duration-row">
-            <input type="range" id="vidDurationSlider" min="4" max="12" value="5"
+            <input type="range" id="vidDurationSlider" min="4" max="15" value="5"
               style="flex:1;accent-color:var(--accent);"
               oninput="vidDuration=+this.value;document.getElementById('vidDurationDisplay').textContent=this.value" />
             <span id="vidDurationDisplay" style="min-width:28px;text-align:center;font-weight:600;">5</span>
@@ -4027,7 +4027,7 @@
     let vidPollTimer = null;
 
     function changeVidDuration(delta) {
-      vidDuration = Math.max(4, Math.min(12, vidDuration + delta));
+      vidDuration = Math.max(4, Math.min(15, vidDuration + delta));
       document.getElementById('vidDurationDisplay').textContent = vidDuration;
     }
 
