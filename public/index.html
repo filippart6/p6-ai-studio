@@ -2336,8 +2336,8 @@
           <div class="elem-img-status" id="elemImgStatus"></div>
         </div>
         <div class="field">
-          <label>ModelArk Asset URI <span style="color:var(--text-muted);font-weight:400;">(optional — paste a character/asset URI from your ModelArk library)</span></label>
-          <input type="text" id="elemArkUri" placeholder="e.g. the asset URI copied from the ModelArk console" oninput="updateElemSlug()" />
+          <label>ModelArk Asset URL <span style="color:var(--text-muted);font-weight:400;">(optional — paste the character's <b>Active asset URL</b> from ModelArk, i.e. the https URL GetAsset returns)</span></label>
+          <input type="text" id="elemArkUri" placeholder="https://…  (the resolved asset URL, not the group-/asset- ID)" oninput="updateElemSlug()" />
         </div>
         <button class="btn btn-primary" id="elemCreateBtn" onclick="createElementEntry()" disabled style="margin-top:4px;">
           <div class="spinner"></div>
