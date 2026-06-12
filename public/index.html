@@ -2325,7 +2325,7 @@
           <textarea id="elemDesc" placeholder="e.g. A woman in her 30s, dark hair, sharp eyes, always in black clothing" style="min-height:60px;"></textarea>
         </div>
         <div class="field">
-          <label>Reference Images <span style="color:var(--text-muted);font-weight:400;">(1–4 photos)</span></label>
+          <label>Reference Images <span style="color:var(--text-muted);font-weight:400;">(up to 4 — optional if you use a ModelArk asset below)</span></label>
           <div class="elem-img-strip" id="elemImgStrip">
             <label class="elem-img-add" id="elemImgAdd" for="elemImgFile">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -2334,6 +2334,10 @@
             <input type="file" id="elemImgFile" accept="image/png,image/jpeg,image/webp" style="display:none;" multiple onchange="onElemImgPick(this)" />
           </div>
           <div class="elem-img-status" id="elemImgStatus"></div>
+        </div>
+        <div class="field">
+          <label>ModelArk Asset URI <span style="color:var(--text-muted);font-weight:400;">(optional — paste a character/asset URI from your ModelArk library)</span></label>
+          <input type="text" id="elemArkUri" placeholder="e.g. the asset URI copied from the ModelArk console" oninput="updateElemSlug()" />
         </div>
         <button class="btn btn-primary" id="elemCreateBtn" onclick="createElementEntry()" disabled style="margin-top:4px;">
           <div class="spinner"></div>
@@ -3725,12 +3729,21 @@
       document.getElementById('elemTypeLoc').classList.toggle('selected', type === 'location');
     }
 
+    // An element is valid when it has a label AND is backed by either an
+    // uploaded image or a ModelArk asset URI.
+    function refreshElemCreateBtn() {
+      const label = document.getElementById('elemLabel').value.trim();
+      const arkUri = document.getElementById('elemArkUri').value.trim();
+      document.getElementById('elemCreateBtn').disabled =
+        !label || (elemUploadedImages.length === 0 && !arkUri);
+    }
+
     function updateElemSlug() {
       const label = document.getElementById('elemLabel').value.trim();
       const slug = label.toLowerCase().replace(/[^a-z0-9\s-]/g, '').replace(/[\s-]+/g, '-').replace(/^-|-$/g, '');
       const preview = document.getElementById('elemSlugPreview');
       preview.textContent = slug ? `@${slug}` : '';
-      document.getElementById('elemCreateBtn').disabled = !label || elemUploadedImages.length === 0;
+      refreshElemCreateBtn();
     }
 
     async function onElemImgPick(input) {
@@ -3760,8 +3773,7 @@
 
       statusEl.textContent = uploadError ||
         (elemUploadedImages.length > 0 ? `${elemUploadedImages.length} image(s) ready` : '');
-      document.getElementById('elemCreateBtn').disabled =
-        !document.getElementById('elemLabel').value.trim() || elemUploadedImages.length === 0;
+      refreshElemCreateBtn();
       // Reset file input so same file can be re-picked
       input.value = '';
     }
@@ -3790,8 +3802,7 @@
       renderElemImgStrip();
       document.getElementById('elemImgStatus').textContent =
         elemUploadedImages.length > 0 ? `${elemUploadedImages.length} image(s) ready` : '';
-      document.getElementById('elemCreateBtn').disabled =
-        !document.getElementById('elemLabel').value.trim() || elemUploadedImages.length === 0;
+      refreshElemCreateBtn();
     }
 
     function readFileAsDataURL(file) {
@@ -3815,7 +3826,8 @@
     // would be shadowed by document.createElement and never run.
     async function createElementEntry() {
       const label = document.getElementById('elemLabel').value.trim();
-      if (!label || elemUploadedImages.length === 0) return;
+      const arkUri = document.getElementById('elemArkUri').value.trim();
+      if (!label || (elemUploadedImages.length === 0 && !arkUri)) return;
 
       const btn = document.getElementById('elemCreateBtn');
       btn.classList.add('loading');
@@ -3832,7 +3844,8 @@
             label,
             type: elemSelectedType,
             images: elemUploadedImages.map(i => i.url),
-            description: document.getElementById('elemDesc').value.trim()
+            description: document.getElementById('elemDesc').value.trim(),
+            ark_uri: arkUri
           })
         });
         const data = await uploadJson(res);
@@ -3840,6 +3853,7 @@
         // Reset form
         document.getElementById('elemLabel').value = '';
         document.getElementById('elemDesc').value = '';
+        document.getElementById('elemArkUri').value = '';
         document.getElementById('elemSlugPreview').textContent = '';
         elemUploadedImages = [];
         renderElemImgStrip();
@@ -3869,18 +3883,21 @@
       const locs  = elements.filter(e => e.type === 'location');
 
       function cardHTML(el) {
-        const thumbs = el.images.map(u => `<img src="${u}" alt="${el.label}" onerror="this.style.display='none'" />`).join('');
+        const thumbs = (el.images || []).map(u => `<img src="${u}" alt="${el.label}" onerror="this.style.display='none'" />`).join('');
+        const arkTag = el.ark_uri
+          ? `<span class="elem-card-slug" style="color:var(--accent2);">⛓ ModelArk asset</span>` : '';
         return `
           <div class="elem-card" id="ecard-${el.id}">
             <div class="elem-card-header">
               <div class="elem-card-info">
                 <div class="elem-card-label">${el.label}</div>
                 <div class="elem-card-slug">@${el.name}</div>
+                ${arkTag}
                 ${el.description ? `<div class="elem-card-desc">${el.description}</div>` : ''}
               </div>
               <button class="elem-card-del" onclick="deleteElement('${el.id}')">✕ Delete</button>
             </div>
-            <div class="elem-card-thumbs">${thumbs}</div>
+            ${thumbs ? `<div class="elem-card-thumbs">${thumbs}</div>` : ''}
           </div>`;
       }
 
@@ -4040,7 +4057,7 @@
         ok = !!vidStartUrl;
       } else { // elements
         const hasElem = typeof collectVidElements === 'function' &&
-                        collectVidElements().some(el => el.images.length > 0);
+                        collectVidElements().some(el => el.images.length > 0 || el.ark_uri);
         const hasAsset = typeof collectRefAssets === 'function' &&
                          (collectRefAssets('image').length || collectRefAssets('video').length || collectRefAssets('audio').length);
         ok = !!(hasElem || hasAsset);
@@ -4132,10 +4149,15 @@
         const role = vidElemRole(el);
         const thumb = el.images && el.images[0] ? el.images[0] : '';
         const sel = selectedVidElements.has(el.id) ? ' selected' : '';
+        const arkBadge = el.ark_uri
+          ? `<span style="position:absolute;top:-6px;left:-6px;font-size:0.55rem;font-weight:700;background:var(--accent);color:#fff;padding:1px 5px;border-radius:10px;">ARK</span>` : '';
+        const media = thumb
+          ? `<img src="${thumb}" alt="${el.label}" onerror="this.style.visibility='hidden'" />`
+          : `<span style="width:38px;height:38px;border-radius:8px;background:var(--bg);display:flex;align-items:center;justify-content:center;color:var(--accent2);font-size:0.7rem;font-weight:700;">${el.ark_uri ? 'ARK' : ''}</span>`;
         return `
-          <div class="vid-elem-chip${sel}" id="velem-${el.id}" onclick="toggleVidElement('${el.id}')" title="@${el.name}">
-            ${thumb ? `<img src="${thumb}" alt="${el.label}" onerror="this.style.visibility='hidden'" />`
-                    : `<span style="width:38px;height:38px;border-radius:8px;background:var(--bg);display:inline-block;"></span>`}
+          <div class="vid-elem-chip${sel}" id="velem-${el.id}" onclick="toggleVidElement('${el.id}')" title="@${el.name}" style="position:relative;">
+            ${arkBadge}
+            ${media}
             <div class="vid-elem-chip-info">
               <span class="vid-elem-chip-label">${el.label}</span>
               <span class="vid-elem-chip-meta">@${el.name}</span>
@@ -4181,6 +4203,7 @@
           role: vidElemRole(el),
           description: el.description || '',
           images: el.images || [],
+          ark_uri: el.ark_uri || '',
         }));
     }
 

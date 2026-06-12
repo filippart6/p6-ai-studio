@@ -145,6 +145,12 @@ def init_db():
                 created_at  TEXT NOT NULL
             )
         ''')
+        # Migrate: add ModelArk asset URI column (for characters backed by a
+        # ModelArk digital-character asset rather than an uploaded image)
+        try:
+            conn.execute("ALTER TABLE elements ADD COLUMN ark_uri TEXT DEFAULT ''")
+        except Exception:
+            pass
 
 
 init_db()
@@ -735,6 +741,9 @@ def list_elements():
             d['images'] = json.loads(d['images'])
         except Exception:
             d['images'] = []
+        d.setdefault('ark_uri', '')
+        if d.get('ark_uri') is None:
+            d['ark_uri'] = ''
         items.append(d)
     return jsonify({'elements': items})
 
@@ -752,8 +761,12 @@ def create_element():
     if etype not in ('character', 'location'):
         return jsonify({'error': 'Type must be character or location'}), 400
     images = body.get('images', [])
-    if not images or len(images) > 4:
-        return jsonify({'error': '1–4 images required'}), 400
+    ark_uri = (body.get('ark_uri') or '').strip()
+    if len(images) > 4:
+        return jsonify({'error': 'At most 4 images allowed'}), 400
+    # An element must be backed by either uploaded image(s) OR a ModelArk asset URI
+    if not images and not ark_uri:
+        return jsonify({'error': 'Add at least one image or a ModelArk asset URI'}), 400
     description = body.get('description', '').strip()
     name = _slugify(label)
     if not name:
@@ -767,12 +780,13 @@ def create_element():
         if existing:
             return jsonify({'error': f'An element named @{name} already exists'}), 409
         conn.execute(
-            '''INSERT INTO elements (id,user,name,label,type,images,description,created_at)
-               VALUES (?,?,?,?,?,?,?,?)''',
-            (entry_id, user, name, label, etype, json.dumps(images), description, created_at)
+            '''INSERT INTO elements (id,user,name,label,type,images,description,created_at,ark_uri)
+               VALUES (?,?,?,?,?,?,?,?,?)''',
+            (entry_id, user, name, label, etype, json.dumps(images), description, created_at, ark_uri)
         )
     return jsonify({'id': entry_id, 'name': name, 'label': label, 'type': etype,
-                    'images': images, 'description': description, 'created_at': created_at})
+                    'images': images, 'description': description, 'created_at': created_at,
+                    'ark_uri': ark_uri})
 
 @app.route('/api/elements/<element_id>', methods=['DELETE'])
 @login_required
@@ -907,18 +921,22 @@ def generate_video():
                                   'role': 'last_frame'})
 
     elif mode == 'elements':
-        # Library Elements: {name, label, type, description, images:[urls]}
+        # Library Elements: {name, label, type, description, images:[urls], ark_uri}
+        # A ModelArk-backed element passes its asset URI as the reference;
+        # otherwise the first uploaded image is used.
         for el in (body.get('elements') or []):
             name = (el.get('name') or '').strip()
             label = (el.get('label') or name)
             desc = (el.get('description') or '').strip()
             etype = el.get('type') or 'character'
             imgs = el.get('images') or []
+            ark = (el.get('ark_uri') or '').strip()
             if name:  # expand any @name mention into the readable label
                 prompt = _re.sub(rf'@{_re.escape(name)}\b', label, prompt, flags=_re.IGNORECASE)
-            if imgs:
+            ref_url = ark or (imgs[0] if imgs else '')
+            if ref_url:
                 kind = 'location' if etype == 'location' else 'character'
-                img_refs.append({'url': imgs[0],
+                img_refs.append({'url': ref_url,
                                  'desc': f'the {kind} {label}' + (f' ({desc})' if desc else '')})
 
         # Per-video uploaded reference assets: each {url, label}
